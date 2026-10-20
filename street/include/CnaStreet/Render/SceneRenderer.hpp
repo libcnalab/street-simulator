@@ -155,6 +155,12 @@ struct InstanceGroup
  * first frame (static geometry and instance groups) or submitted this frame
  * (vehicles and pedestrians, which move).
  *
+ * The frame is drawn by cna-engine: visibility by its culling rules, the draws
+ * by its `ForwardRenderer` with the `PbrMaterialBinder` (Street's sun, ambient,
+ * fog, exposure, sky environment and, per item, its reflection probe), the sky
+ * as a custom pass before the opaque geometry. The probe bake still draws the
+ * scene itself with the effects below.
+ *
  * `PbrEffect` lights and sRGB-encodes each surface. Image-based lighting and
  * local reflection probes supply the environment, while
  * `RenderSettings::exposure` scales the light linearly.
@@ -241,10 +247,11 @@ public:
 
         /// The opaque pass's CPU time split between the two things it does
         /// per draw: setting the material on the effect and applying it, and
-        /// issuing the draw. Only measured while @ref setDrawTimingEnabled is
-        /// on; -1 otherwise. The split is what says whether a material state
-        /// cache on this side of the framework could buy anything: if the
-        /// setters are a tenth of the draw, skipping them saves a tenth.
+        /// issuing the draw. Not measured while cna-engine draws the frame
+        /// (its renderer applies and draws in one loop): always -1. The split
+        /// is what says whether a material state cache on this side of the
+        /// framework could buy anything: if the setters are a tenth of the
+        /// draw, skipping them saves a tenth.
         float opaqueApplyMs = -1.0f;
         float opaqueDrawMs  = -1.0f;
         float skinnedMs     = -1.0f;
@@ -346,8 +353,8 @@ public:
     /// @p limit 0 means every family.
     [[nodiscard]] std::vector<BatchCost> costReport(std::size_t limit) const;
 
-    /// Turns on the apply-versus-draw split in @ref Stats. Two clock reads per
-    /// opaque draw; a profiling run pays it, an ordinary frame does not.
+    /// Asked for the apply-versus-draw split in @ref Stats, which cna-engine's
+    /// renderer does not measure; kept so profiling runs still start.
     void setDrawTimingEnabled(bool enabled) { drawTimingEnabled_ = enabled; }
 
     /// The same breakdown over the set that survived the *last* frame's cull,
@@ -358,10 +365,10 @@ public:
 
 private:
     void useMaterialSamplers();
-    void drawOpaque(const Camera& camera, const RenderSettings& settings);
-    void drawSkinned(const Camera& camera, const RenderSettings& settings);
-    void drawTransparent(const Camera& camera, const RenderSettings& settings);
+    /// Decides what is visible with cna-engine's rules and queues it.
     void cull(const Camera& camera, const RenderSettings& settings);
+    /// Street's lighting, exposure and environments for the engine's binder.
+    void setEngineLighting(const RenderSettings& settings);
     void applyMaterial(const Material& material, const Microsoft::Xna::Framework::Matrix& world,
                        const Microsoft::Xna::Framework::Matrix& view,
                        const Microsoft::Xna::Framework::Matrix& projection,
@@ -382,6 +389,10 @@ private:
     Microsoft::Xna::Framework::Graphics::GraphicsDevice& device_;
     MaterialLibrary& materials_;
     SkySystem sky_;
+
+    /// cna-engine's renderer, camera, queue and the frame's engine materials.
+    struct EngineFrame;
+    std::unique_ptr<EngineFrame> engine_;
 
     std::unique_ptr<Microsoft::Xna::Framework::Graphics::PbrEffect> effect_;
     std::unique_ptr<Microsoft::Xna::Framework::Graphics::SkinnedPbrEffect> skinnedEffect_;
@@ -425,16 +436,6 @@ private:
     std::vector<std::string> limitations_;
 
     bool drawTimingEnabled_ = false;
-
-    /// One instanced renderer per mesh, kept across frames. It used to be
-    /// built on the stack for every group every frame, and a fresh one has
-    /// no instance buffer: its first `setInstances` allocates a
-    /// `DynamicVertexBuffer`, uploads into it, and the destructor frees it
-    /// at the end of the loop body -- fifty-odd GPU buffer allocations and
-    /// frees a frame for transform lists that mostly did not change size.
-    /// Kept, the buffer is reused and only grows.
-    [[nodiscard]] InstancedMesh& instancedFor(const GpuMesh* mesh);
-    std::unordered_map<const GpuMesh*, std::unique_ptr<InstancedMesh>> instancedByMesh_;
 };
 
 }  // namespace CnaStreet

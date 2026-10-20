@@ -7,6 +7,15 @@
 #include "CnaStreet/Render/SkinnedGpuMesh.hpp"
 #include "CnaStreet/Render/MaterialLibrary.hpp"
 
+#include "CnaEngine/Enhanced/PbrMaterialBinder.hpp"
+#include "CnaEngine/Graphics/Camera.hpp"
+#include "CnaEngine/Graphics/ForwardRenderer.hpp"
+#include "CnaEngine/Graphics/Instancing.hpp"
+#include "CnaEngine/Graphics/Material.hpp"
+#include "CnaEngine/Graphics/RenderQueue.hpp"
+#include "CnaEngine/Graphics/RenderStatistics.hpp"
+#include "CnaEngine/Graphics/Visibility.hpp"
+
 #include "CNA/GraphicsCapability.hpp"
 #include "CNA/Logger.hpp"
 #include "Microsoft/Xna/Framework/Color.hpp"
@@ -15,6 +24,7 @@
 #include "Microsoft/Xna/Framework/Graphics/DepthFormat.hpp"
 #include "Microsoft/Xna/Framework/Graphics/DepthStencilState.hpp"
 #include "Microsoft/Xna/Framework/Graphics/GraphicsDevice.hpp"
+#include "Microsoft/Xna/Framework/Graphics/GraphicsProfile.hpp"
 #include "Microsoft/Xna/Framework/Graphics/ImageBasedLightEXT.hpp"
 #include "Microsoft/Xna/Framework/Graphics/PbrEffect.hpp"
 #include "Microsoft/Xna/Framework/Graphics/SkinnedPbrEffect.hpp"
@@ -42,7 +52,47 @@ using System::Diagnostics::Stopwatch;
 
 namespace CnaStreet {
 
+namespace Engine = CnaEngine::Graphics;
+
 namespace {
+
+/// Street's material, field by field, as the engine's: physically based, with
+/// the blend Street's renderer chose from the alpha mode (glass premultiplied).
+Engine::Material ToEngine(const Material& m)
+{
+    Engine::Material e;
+    e.name = m.name;
+    e.shading = Engine::ShadingModel::PhysicallyBased;
+    switch (m.alphaMode)
+    {
+        case AlphaModeEXT::Opaque: e.blend = Engine::BlendMode::Opaque; break;
+        case AlphaModeEXT::Mask:   e.blend = Engine::BlendMode::AlphaTest; break;
+        case AlphaModeEXT::Blend:
+            e.blend = m.premultipliedBlend ? Engine::BlendMode::PremultipliedAlpha
+                                           : Engine::BlendMode::AlphaBlend;
+            break;
+    }
+    e.alpha = m.alpha;
+    e.alphaCutoff = m.alphaCutoff;
+    e.doubleSided = m.doubleSided;
+    // A room is not lit by the sun (see Material::sunlit).
+    e.keyLight = m.sunlit;
+    e.diffuseColor = m.baseColour;
+    e.emissiveColor = m.emissiveFactor;
+    e.metallic = m.metallic;
+    e.roughness = m.roughness;
+    e.normalScale = m.normalScale;
+    e.occlusionStrength = m.occlusionStrength;
+    e.ior = m.ior;
+    e.specularFactor = m.specular;
+    e.uvScale = m.uvScale;
+    e.uvOffset = m.uvOffset;
+    e.baseTexture = m.albedo;
+    e.normalTexture = m.normal;
+    e.occlusionRoughnessMetallicTexture = m.orm;
+    e.emissiveTexture = m.emissive;
+    return e;
+}
 
 /// .NET ticks are 100 ns, so this is what turns a Stopwatch reading into the
 /// milliseconds the overlay shows.
@@ -128,6 +178,41 @@ SceneRenderer::SceneRenderer(GraphicsDevice& device, MaterialLibrary& materials)
 
 SceneRenderer::~SceneRenderer() = default;
 
+struct SceneRenderer::EngineFrame
+{
+    explicit EngineFrame(GraphicsDevice& device)
+        : renderer(device),
+          pbr(std::make_shared<CnaEngine::Enhanced::PbrMaterialBinder>(device, renderer.StockBinder()))
+    {
+        renderer.SetMaterialBinder(pbr);
+    }
+
+    Engine::ForwardRenderer renderer;
+    std::shared_ptr<CnaEngine::Enhanced::PbrMaterialBinder> pbr;
+    /// Street's camera matrices, used verbatim.
+    Engine::Camera camera;
+    Engine::RenderQueue queue;
+    /// This frame's engine materials, converted from Street's on first use.
+    std::unordered_map<const Material*, Engine::Material> materials;
+    /// One instance set per group, kept across frames so that its instance
+    /// buffer is reused and only grows.
+    std::vector<Engine::InstanceSet> sets;
+    /// Each reflection probe's image-based light for this frame.
+    std::unordered_map<const ReflectionProbe*, ImageBasedLightEXT> probeLights;
+    /// Draws that are not instanced, so the instanced ones can be told apart
+    /// in the engine's total.
+    int singleDraws = 0;
+    float skyTime = 0.0f;
+    float skyMs = 0.0f;
+
+    const Engine::Material& materialFor(const Material* material)
+    {
+        auto found = materials.find(material);
+        if (found == materials.end()) found = materials.emplace(material, ToEngine(*material)).first;
+        return found->second;
+    }
+};
+
 void SceneRenderer::initialise(const RenderSettings& settings)
 {
     limitations_.clear();
@@ -157,6 +242,29 @@ void SceneRenderer::initialise(const RenderSettings& settings)
 
     sky_.build(settings);
     if (!sky_.isSupported()) limitations_.emplace_back(sky_.unsupportedReason());
+
+    engine_ = std::make_unique<EngineFrame>(device_);
+    // An item's own probe, when it has one this frame; otherwise the sky's
+    // environment the binder carries.
+    engine_->pbr->SetEnvironmentSelector(
+        [this](const Engine::RenderItem& item) -> const ImageBasedLightEXT* {
+            const auto* probe = static_cast<const ReflectionProbe*>(item.userData);
+            if (probe == nullptr) return nullptr;
+            const auto found = engine_->probeLights.find(probe);
+            return found == engine_->probeLights.end() ? nullptr : &found->second;
+        });
+    // The sky first, with depth writes off so every later draw covers it,
+    // sRGB-encoded because nothing downstream will encode it.
+    engine_->renderer.AddPass(
+        Engine::PassPoint::BeforeOpaque, "street-sky",
+        [this](GraphicsDevice& device, const Engine::Camera& camera, Engine::RenderStatistics&) {
+            const Stopwatch watch = Stopwatch::StartNew();
+            device.setDepthStencilStateProperty(DepthStencilState::None);
+            device.setBlendStateProperty(BlendState::Opaque);
+            sky_.draw(camera.View(), camera.Projection(), width_, height_, engine_->skyTime, lightScale_,
+                      true);
+            engine_->skyMs = Milliseconds(watch);
+        });
     if (!sky_.hasImageBasedLighting())
         limitations_.emplace_back("no image based lighting; ambient is a hemisphere term");
 
@@ -192,19 +300,10 @@ void SceneRenderer::addInstances(InstanceGroup group)
     groups_.push_back(std::move(group));
 }
 
-InstancedMesh& SceneRenderer::instancedFor(const GpuMesh* mesh)
-{
-    auto found = instancedByMesh_.find(mesh);
-    if (found == instancedByMesh_.end())
-        found = instancedByMesh_.emplace(mesh, std::make_unique<InstancedMesh>(device_, mesh->part()))
-                    .first;
-    return *found->second;
-}
-
 void SceneRenderer::clearScene()
 {
-    // The renderers hold a part pointer into a mesh the scene owns.
-    instancedByMesh_.clear();
+    // The instance sets hold a pointer into a mesh the scene owns.
+    if (engine_) engine_->sets.clear();
     items_.clear();
     groups_.clear();
     dynamic_.clear();
@@ -256,7 +355,12 @@ void SceneRenderer::cull(const Camera& camera, const RenderSettings& settings)
         sceneSorted_ = true;
     }
 
-    const BoundingFrustum& frustum = camera.frustum();
+    EngineFrame& e = *engine_;
+    e.camera.SetMatrices(camera.view(), camera.projection());
+    e.queue.Clear();
+    e.materials.clear();
+    e.singleDraws = 0;
+    const Engine::VisibilitySettings anywhere;
     const Vector3& eye = camera.position();
 
     visibleOpaque_.clear();
@@ -271,27 +375,57 @@ void SceneRenderer::cull(const Camera& camera, const RenderSettings& settings)
         // cannot be instanced, so the far end of the street is the most
         // expensive place in the scene to populate. CityScene applies the same
         // limit when it submits; this is the backstop.
-        if (Vector3::Distance(eye, item.worldSphere.Center) - item.worldSphere.Radius
-            > settings.pedestrianCullDistance)
-            continue;
-        if (frustum.Contains(item.worldSphere) == ContainmentType::Disjoint) continue;
+        Engine::VisibilitySettings people;
+        people.maxDistance = settings.pedestrianCullDistance;
+        if (Engine::Classify(item.worldSphere, 1, e.camera, people) != Engine::Visibility::Visible) continue;
         visibleSkinned_.push_back(i);
+        // Without a skinning shader nothing is drawn rather than every figure
+        // in its bind pose at the origin.
+        if (skinnedEffect_ == nullptr) continue;
+        Engine::RenderItem figure;
+        figure.mesh     = &item.mesh->engine();
+        figure.material = &e.materialFor(item.material);
+        figure.world    = item.world;
+        figure.bounds   = item.worldSphere;
+        figure.bones    = item.bones;
+        e.queue.Submit(figure);
+        ++e.singleDraws;
+        ++stats_.skinnedDrawCalls;
+        if (item.driver) ++stats_.driverDrawCalls;
+        stats_.characterTriangles += static_cast<std::size_t>(item.mesh->triangleCount());
     }
     stats_.visibleCharacters = static_cast<int>(visibleSkinned_.size());
     stats_.visibleItems = 0;
     stats_.totalItems = static_cast<int>(items_.size() + dynamic_.size());
 
+    // A box as well as a sphere: distance and frustum are measured against the
+    // box, which is what a long facade batch needs.
+    const auto toEngine = [&e](const SceneItem& item, float cullDistance) {
+        Engine::RenderItem engineItem;
+        engineItem.mesh         = &item.mesh->engine();
+        engineItem.material     = &e.materialFor(item.material);
+        engineItem.world        = item.world;
+        engineItem.bounds       = item.worldSphere;
+        engineItem.box          = item.worldBounds;
+        engineItem.cullDistance = cullDistance;
+        engineItem.userData     = item.probe;   // its reflection probe, if any
+        return engineItem;
+    };
     for (std::size_t i = 0; i < items_.size(); ++i)
     {
         const SceneItem& item = items_[i];
         const float limit = item.cullDistance > 0.0f
                                 ? std::min(item.cullDistance, settings.propCullDistance)
                                 : 0.0f;
-        if (limit > 0.0f && DistanceToBox(eye, item.worldBounds) > limit) continue;
-        if (frustum.Contains(item.worldBounds) == ContainmentType::Disjoint) continue;
+        const Engine::RenderItem engineItem = toEngine(item, limit);
+        if (Engine::Classify(engineItem, e.camera, anywhere) != Engine::Visibility::Visible) continue;
         if (item.material->isBlended()) visibleTransparent_.push_back(i);
         else                            visibleOpaque_.push_back(i);
         ++stats_.visibleItems;
+        // A shadow-only item draws nowhere the camera looks.
+        if (item.shadowOnly) continue;
+        e.queue.Submit(engineItem);
+        ++e.singleDraws;
     }
 
     // Movers are culled by distance as well as by frustum. A person at 200 m is
@@ -305,22 +439,22 @@ void SceneRenderer::cull(const Camera& camera, const RenderSettings& settings)
     {
         if (dynamic_[i].shadowOnly) continue;
         const SceneItem& item = dynamic_[i];
-        if (moverDistance > 0.0f && DistanceToBox(eye, item.worldBounds) > moverDistance) continue;
-        if (frustum.Contains(item.worldBounds) == ContainmentType::Disjoint) continue;
+        const Engine::RenderItem engineItem = toEngine(item, moverDistance);
+        if (Engine::Classify(engineItem, e.camera, anywhere) != Engine::Visibility::Visible) continue;
         visibleDynamic_.push_back(i);
         ++stats_.visibleItems;
+        e.queue.Submit(engineItem);
+        ++e.singleDraws;
+        if (item.family == DrawFamily::Vehicle)
+        {
+            ++stats_.vehicleDrawCalls;
+            stats_.vehicleTriangles += static_cast<std::size_t>(item.mesh->triangleCount());
+        }
     }
-
-    // Transparent surfaces are drawn far to near, so blending composites in the
-    // right order without a depth pre-sort.
-    std::sort(visibleTransparent_.begin(), visibleTransparent_.end(),
-              [&](std::size_t a, std::size_t b) {
-                  return DistanceToBox(eye, items_[a].worldBounds)
-                         > DistanceToBox(eye, items_[b].worldBounds);
-              });
 
     visibleGroupTransforms_.resize(groups_.size());
     visibleGroupMesh_.resize(groups_.size());
+    e.sets.resize(groups_.size());
     stats_.visibleInstances = 0;
     stats_.totalInstances = 0;
     for (std::size_t g = 0; g < groups_.size(); ++g)
@@ -336,28 +470,92 @@ void SceneRenderer::cull(const Camera& camera, const RenderSettings& settings)
         if (group.shadowOnly) continue;
         stats_.totalInstances += static_cast<int>(group.transforms.size());
 
-        const float limit = group.cullDistance > 0.0f
+        Engine::VisibilitySettings range;
+        range.maxDistance = group.cullDistance > 0.0f
                                 ? std::min(group.cullDistance, settings.propCullDistance)
                                 : settings.propCullDistance;
+        range.minDistance = group.minDistance;
         float nearest = 1e30f;
+        const BoundingSphere* first = nullptr;
         for (std::size_t i = 0; i < group.transforms.size(); ++i)
         {
             const BoundingSphere& sphere = group.spheres[i];
-            const float distance = Vector3::Distance(eye, sphere.Center) - sphere.Radius;
-            if (distance > limit) continue;
-            if (group.minDistance > 0.0f && distance < group.minDistance) continue;
-            if (frustum.Contains(sphere) == ContainmentType::Disjoint) continue;
+            if (Engine::Classify(sphere, 1, e.camera, range) != Engine::Visibility::Visible) continue;
             visible.push_back(group.transforms[i]);
-            nearest = std::min(nearest, distance);
+            nearest = std::min(nearest, Vector3::Distance(eye, sphere.Center) - sphere.Radius);
+            if (first == nullptr) first = &sphere;
         }
+        stats_.visibleInstances += static_cast<int>(visible.size());
+        if (visible.empty()) continue;
         // One LOD decision for the whole batch rather than per instance: a batch
         // is a single draw, and splitting it in two to give the near half more
         // triangles costs more than the triangles saved.
-        if (group.lodMesh != nullptr && group.lodDistance > 0.0f && nearest > group.lodDistance)
+        if (group.lodMesh != nullptr && group.lodDistance > 0.0f
+            && Engine::LodSelector({group.lodDistance}, 0.0f).Select(nearest) == 1)
             visibleGroupMesh_[g] = group.lodMesh;
-        stats_.visibleInstances += static_cast<int>(visible.size());
+
+        Engine::InstanceSet& set = e.sets[g];
+        set.Clear();
+        set.SetMesh(&visibleGroupMesh_[g]->engine());
+        for (const Matrix& transform : visible) set.Add(transform);
+        Engine::RenderItem instances;
+        instances.mesh      = set.Mesh();
+        instances.material  = &e.materialFor(group.material);
+        instances.bounds    = *first;
+        instances.instances = &set;
+        e.queue.Submit(instances);
+    }
+}
+
+void SceneRenderer::setEngineLighting(const RenderSettings& settings)
+{
+    EngineFrame& e = *engine_;
+    // Exposure scales every light and the environment; the binder applies it.
+    auto& pbr = e.pbr->Settings();
+    pbr.exposure = lightScale_;
+    const bool imageBased = sky_.hasImageBasedLighting() && settings.imageBasedLighting;
+    pbr.environment = ImageBasedLightEXT{};
+    e.probeLights.clear();
+    if (imageBased)
+    {
+        // The cube holds radiance divided by the environment scale; the
+        // effect multiplies it back.
+        pbr.environment.Irradiance          = sky_.irradiance();
+        pbr.environment.PrefilteredSpecular = sky_.prefiltered();
+        pbr.environment.PrefilteredMipCount = sky_.prefilteredMipCount();
+        pbr.environment.BrdfLut             = sky_.brdfLut();
+        pbr.environment.Intensity           = sky_.environmentScale() * settings.iblIntensity;
+        // A probe's own prefiltered cube (and its irradiance when asked for),
+        // with the sky's table and scale: both cubes are stored at the sky's
+        // scale, so one Intensity serves whichever fills each slot.
+        for (const auto& probe : probes_)
+        {
+            if (probe->prefiltered == nullptr) continue;
+            ImageBasedLightEXT light;
+            light.PrefilteredSpecular = probe->prefiltered.get();
+            light.PrefilteredMipCount = probe->prefilteredMips;
+            light.Irradiance = settings.probeIrradiance && probe->irradiance != nullptr
+                                   ? probe->irradiance.get()
+                                   : sky_.irradiance();
+            light.BrdfLut   = sky_.brdfLut();
+            light.Intensity = sky_.environmentScale() * settings.iblIntensity;
+            e.probeLights.emplace(probe.get(), light);
+        }
     }
 
+    auto& lighting = e.renderer.Lighting();
+    lighting.defaultLighting = false;
+    lighting.lightDirection  = sky_.lightDirection();
+    lighting.lightColor      = sky_.sunColour();
+    lighting.fillLights.clear();
+    lighting.ambientColor    = sky_.ambientColour();
+    // Distance fog matched to the sky's own horizon haze, so the far end of the
+    // street fades into the same colour the sky is that direction rather than
+    // into a fog colour picked by hand.
+    lighting.fogEnabled = settings.heightFog;
+    lighting.fogColor   = sky_.ambientColour();
+    lighting.fogStart   = settings.farPlane * 0.30f;
+    lighting.fogEnd     = settings.farPlane * 0.98f;
 }
 
 void SceneRenderer::applyLighting(const RenderSettings& settings)
@@ -520,216 +718,6 @@ void SceneRenderer::useMaterialSamplers()
 {
     auto& samplers = device_.getSamplerStatesProperty();
     for (int slot = 0; slot < 5; ++slot) samplers[slot] = SamplerState::LinearWrap;
-}
-
-void SceneRenderer::drawSkinned(const Camera& camera, const RenderSettings& settings)
-{
-    if (skinnedEffect_ == nullptr || visibleSkinned_.empty()) return;
-    SkinnedPbrEffect& effect = *skinnedEffect_;
-
-    // The same lighting the rest of the frame has, exposure included. Set once,
-    // because the whole crowd shares it and a per-character upload of the
-    // environment cube would be the single most expensive thing in the pass.
-    effect.setLightingEnabledProperty(true);
-    auto& sun = effect.getDirectionalLight0Property();
-    sun.setEnabledProperty(true);
-    sun.setDirectionProperty(sky_.lightDirection());
-    sun.setDiffuseColorProperty(sky_.sunColour() * lightScale_);
-    sun.setSpecularColorProperty(sky_.sunColour() * lightScale_);
-    effect.getDirectionalLight1Property().setEnabledProperty(false);
-    effect.getDirectionalLight2Property().setEnabledProperty(false);
-    effect.setAmbientLightColorProperty(sky_.ambientColour() * lightScale_);
-    if (sky_.hasImageBasedLighting() && settings.imageBasedLighting)
-    {
-        ImageBasedLightEXT environment;
-        environment.Irradiance          = sky_.irradiance();
-        environment.PrefilteredSpecular = sky_.prefiltered();
-        environment.BrdfLut             = sky_.brdfLut();
-        environment.PrefilteredMipCount = sky_.prefilteredMipCount();
-        environment.Intensity           = sky_.environmentScale() * settings.iblIntensity
-                                          * lightScale_;
-        effect.setImageBasedLightEXT(environment);
-    }
-    if (settings.heightFog)
-    {
-        effect.setFogEnabledProperty(true);
-        effect.setFogColorProperty(sky_.ambientColour());
-        effect.setFogStartProperty(settings.farPlane * 0.30f);
-        effect.setFogEndProperty(settings.farPlane * 0.98f);
-    }
-    else
-    {
-        effect.setFogEnabledProperty(false);
-    }
-    effect.setViewProperty(camera.view());
-    effect.setProjectionProperty(camera.projection());
-    effect.setEncodeOutputToSrgbEXTProperty(true);
-    effect.setBaseColorTextureIsSrgbEXTProperty(true);
-    effect.setEmissiveTextureIsSrgbEXTProperty(true);
-
-    device_.setRasterizerStateProperty(RasterizerState::CullCounterClockwise);
-    device_.setDepthStencilStateProperty(DepthStencilState::Default);
-    device_.setBlendStateProperty(BlendState::Opaque);
-
-    for (std::size_t index : visibleSkinned_)
-    {
-        const SkinnedItem& item = skinned_[index];
-        const Material& material = *item.material;
-        effect.setWorldProperty(item.world);
-        effect.setDiffuseColorProperty(material.baseColour);
-        effect.setAlphaProperty(material.alpha);
-        effect.setMetallicFactorProperty(material.metallic);
-        effect.setRoughnessFactorProperty(material.roughness);
-        effect.setEmissiveFactorProperty(material.emissiveFactor);
-        effect.setTextureProperty(material.albedo);
-        effect.setNormalMapProperty(material.normal);
-        effect.setMetallicRoughnessMapProperty(material.orm);
-        effect.setOcclusionMapProperty(material.orm);
-        effect.setEmissiveMapProperty(material.emissive);
-        effect.setNormalScaleEXTProperty(material.normalScale);
-        effect.setOcclusionStrengthEXTProperty(material.occlusionStrength);
-        effect.setIorEXTProperty(material.ior);
-        effect.setSpecularFactorEXTProperty(material.specular);
-        effect.setAlphaModeEXTProperty(material.alphaMode);
-        effect.setAlphaCutoffEXTProperty(material.alphaCutoff);
-        effect.setDoubleSidedEXTProperty(material.doubleSided);
-        effect.SetBoneTransforms(*item.bones);
-        effect.Apply();
-        item.mesh->draw(device_);
-        ++stats_.skinnedDrawCalls;
-        ++stats_.drawCalls;
-        if (item.driver) ++stats_.driverDrawCalls;
-        stats_.triangles += static_cast<std::size_t>(item.mesh->triangleCount());
-        stats_.characterTriangles += static_cast<std::size_t>(item.mesh->triangleCount());
-    }
-}
-
-void SceneRenderer::drawOpaque(const Camera& camera, const RenderSettings& settings)
-{
-    device_.setDepthStencilStateProperty(DepthStencilState::Default);
-    device_.setBlendStateProperty(BlendState::Opaque);
-    useMaterialSamplers();
-    applyLighting(settings);
-
-    const Matrix& view = camera.view();
-    const Matrix& projection = camera.projection();
-
-    // Two clocks inside the pass, when asked: the time in this side's
-    // setters and Apply, and the time in the framework's draw. Both are
-    // driver time -- neither waits for the GPU -- and the split says where a
-    // submission-bound frame is actually spending it.
-    const bool timing = drawTimingEnabled_;
-    Stopwatch watch;
-    if (timing) watch = Stopwatch::StartNew();
-    long long applyTicks = 0, drawTicks = 0, skinnedTicks = 0;
-    long long last = 0;
-    const auto lap = [&](long long& into) {
-        if (!timing) return;
-        const long long now = watch.getElapsedTicksProperty();
-        into += now - last;
-        last = now;
-    };
-
-    for (std::size_t index : visibleOpaque_)
-    {
-        const SceneItem& item = items_[index];
-        applyMaterial(*item.material, item.world, view, projection, settings, item.probe);
-        lap(applyTicks);
-        item.mesh->draw(device_);
-        lap(drawTicks);
-        ++stats_.drawCalls;
-        stats_.triangles += static_cast<std::size_t>(item.mesh->triangleCount());
-    }
-
-    for (std::size_t index : visibleDynamic_)
-    {
-        const SceneItem& item = dynamic_[index];
-        if (item.material->isBlended()) continue;
-        applyMaterial(*item.material, item.world, view, projection, settings, item.probe);
-        lap(applyTicks);
-        item.mesh->draw(device_);
-        lap(drawTicks);
-        ++stats_.drawCalls;
-        stats_.triangles += static_cast<std::size_t>(item.mesh->triangleCount());
-        if (item.family == DrawFamily::Vehicle)
-        {
-            ++stats_.vehicleDrawCalls;
-            stats_.vehicleTriangles += static_cast<std::size_t>(item.mesh->triangleCount());
-        }
-    }
-
-    for (std::size_t g = 0; g < groups_.size(); ++g)
-    {
-        const std::vector<Matrix>& visible = visibleGroupTransforms_[g];
-        if (visible.empty()) continue;
-        const InstanceGroup& group = groups_[g];
-        if (group.material->isBlended()) continue;
-        const GpuMesh* mesh = visibleGroupMesh_[g];
-        if (mesh == nullptr) continue;
-
-        applyMaterial(*group.material, Matrix::getIdentityProperty(), view, projection, settings,
-                      nullptr);
-        lap(applyTicks);
-        InstancedMesh& instanced = instancedFor(mesh);
-        instanced.setInstances(visible);
-        instanced.draw(*effect_);
-        lap(drawTicks);
-        stats_.instancedDrawCalls += instanced.lastDrawCallCount();
-        stats_.drawCalls += instanced.lastDrawCallCount();
-        stats_.triangles += static_cast<std::size_t>(mesh->triangleCount()) * visible.size();
-    }
-
-    // The crowd, last among the opaque draws: a different effect, so it costs
-    // one program switch rather than one per person interleaved with the rest.
-    drawSkinned(camera, settings);
-    lap(skinnedTicks);
-
-    if (timing)
-    {
-        stats_.opaqueApplyMs = static_cast<float>(applyTicks) / 10000.0f;
-        stats_.opaqueDrawMs  = static_cast<float>(drawTicks) / 10000.0f;
-        stats_.skinnedMs     = static_cast<float>(skinnedTicks) / 10000.0f;
-    }
-}
-
-void SceneRenderer::drawTransparent(const Camera& camera, const RenderSettings& settings)
-{
-    useMaterialSamplers();
-    applyLighting(settings);
-    const Matrix& view = camera.view();
-    const Matrix& projection = camera.projection();
-    for (std::size_t index : visibleTransparent_)
-    {
-        const SceneItem& item = items_[index];
-        applyMaterial(*item.material, item.world, view, projection, settings, item.probe);
-        item.mesh->draw(device_);
-        ++stats_.drawCalls;
-        stats_.triangles += static_cast<std::size_t>(item.mesh->triangleCount());
-    }
-    for (std::size_t index : visibleDynamic_)
-    {
-        const SceneItem& item = dynamic_[index];
-        if (!item.material->isBlended()) continue;
-        applyMaterial(*item.material, item.world, view, projection, settings, item.probe);
-        item.mesh->draw(device_);
-        ++stats_.drawCalls;
-        stats_.triangles += static_cast<std::size_t>(item.mesh->triangleCount());
-    }
-    for (std::size_t g = 0; g < groups_.size(); ++g)
-    {
-        const std::vector<Matrix>& visible = visibleGroupTransforms_[g];
-        if (visible.empty()) continue;
-        const InstanceGroup& group = groups_[g];
-        if (!group.material->isBlended()) continue;
-        const GpuMesh* mesh = visibleGroupMesh_[g];
-        if (mesh == nullptr) continue;
-        applyMaterial(*group.material, Matrix::getIdentityProperty(), view, projection, settings,
-                      nullptr);
-        InstancedMesh& instanced = instancedFor(mesh);
-        instanced.setInstances(visible);
-        instanced.draw(*effect_);
-        stats_.drawCalls += instanced.lastDrawCallCount();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,21 +1081,49 @@ void SceneRenderer::render(const Camera& camera, const RenderSettings& settings,
     cull(camera, settings);
     const float afterCull = Milliseconds(watch);
 
-    // Draw directly to the back buffer.
+    // Draw directly to the back buffer: the sky (a pass of the engine frame),
+    // then the opaque, alpha-tested and blended surfaces.
     device_.Clear(Color::Black);
+    EngineFrame& e = *engine_;
+    setEngineLighting(settings);
+    e.skyTime = timeSeconds;
+    e.skyMs = 0.0f;
+    e.queue.Sort(e.camera.Position());
 
-    // The sky first, with depth writes off so every later draw covers it,
-    // sRGB-encoded because nothing downstream will encode it.
-    device_.setDepthStencilStateProperty(DepthStencilState::None);
-    device_.setBlendStateProperty(BlendState::Opaque);
-    sky_.draw(camera.view(), camera.projection(), width_, height_, timeSeconds, lightScale_,
-              true);
+    // How many times the binder will apply a material, and how many of those
+    // repeat the material and environment of the call before -- what a state
+    // cache could collapse -- counted in the order the engine draws.
+    const bool hiDef = device_.getGraphicsProfileProperty() == GraphicsProfile::HiDef;
+    const Engine::Material* lastMaterial = nullptr;
+    const void* lastEnvironment = nullptr;
+    for (const auto bucket : {Engine::RenderBucket::Opaque, Engine::RenderBucket::AlphaTested,
+                              Engine::RenderBucket::Transparent, Engine::RenderBucket::Overlay})
+    {
+        for (const Engine::RenderItem& item : e.queue.Items(bucket))
+        {
+            const int applies = item.instances != nullptr && !hiDef
+                                    ? static_cast<int>(item.instances->VisibleCount())
+                                    : 1;
+            if (item.material == lastMaterial && item.userData == lastEnvironment)
+                stats_.repeatedMaterialApplies += applies;
+            else
+                stats_.repeatedMaterialApplies += applies - 1;
+            stats_.materialApplies += applies;
+            lastMaterial = item.material;
+            lastEnvironment = item.userData;
+        }
+    }
 
-    const float afterSky = Milliseconds(watch);
-    drawOpaque(camera, settings);
-    const float afterOpaque = Milliseconds(watch);
-    drawTransparent(camera, settings);
+    const float beforeDraw = Milliseconds(watch);
+    Engine::RenderStatistics drawn;
+    e.renderer.Render(e.queue, e.camera, &drawn);
     device_.setBlendStateProperty(BlendState::Opaque);
+    const float afterDraw = Milliseconds(watch);
+    stats_.drawCalls = static_cast<int>(drawn.drawCalls);
+    stats_.instancedDrawCalls = std::max(0, static_cast<int>(drawn.drawCalls) - e.singleDraws);
+    stats_.triangles = static_cast<std::size_t>(drawn.primitives);
+    for (const std::string& fallback : e.renderer.LastFallbacks())
+        CNA::Logger::Warn("cna-street: cna-engine fallback: " + fallback);
 
     stats_.postPasses = 0;
     stats_.usedSceneTarget = false;
@@ -1115,9 +1131,11 @@ void SceneRenderer::render(const Camera& camera, const RenderSettings& settings,
     stats_.cullMs    = afterCull;
     stats_.shadowMs  = 0.0f;
     stats_.prepassMs = 0.0f;
-    stats_.skyMs     = afterSky - afterCull;
-    stats_.opaqueMs  = afterOpaque - afterSky;
-    stats_.postMs    = Milliseconds(watch) - afterOpaque;
+    // The sky is timed inside the engine frame; the surfaces, blended ones
+    // included, are the rest of it.
+    stats_.skyMs     = (beforeDraw - afterCull) + e.skyMs;
+    stats_.opaqueMs  = afterDraw - beforeDraw - e.skyMs;
+    stats_.postMs    = Milliseconds(watch) - afterDraw;
     stats_.frameMs   = Milliseconds(watch);
 
     stats_.gpuShadowMs  = -1.0;
@@ -1128,7 +1146,6 @@ void SceneRenderer::render(const Camera& camera, const RenderSettings& settings,
     stats_.gpuPostPasses.clear();
     stats_.gpuFrameMs = -1.0;
 }
-
 
 std::vector<SceneRenderer::BatchCost> SceneRenderer::costReport(std::size_t limit) const
 {

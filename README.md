@@ -9,13 +9,14 @@ from a seed; optional scanned surfaces and imported models add detail.
 
 ## Build
 
-You need a C++23 compiler, CMake 3.23 or later and Ninja. CNA and its
-sharp-runtime, easy-gl and meta-gl dependencies are sibling checkouts:
+You need a C++23 compiler, CMake 3.23 or later and Ninja. CNA, cna-engine and
+CNA's sharp-runtime, easy-gl and meta-gl dependencies are sibling checkouts:
 
 ```text
 parent/
 ├── cna-street/
 ├── cna/             next branch
+├── cna-engine/      develop branch (draws the city; CNA_STREET_CNA_ENGINE_ROOT)
 ├── sharp-runtime/   next branch
 ├── easy-gl/         develop branch
 └── meta-gl/         develop branch

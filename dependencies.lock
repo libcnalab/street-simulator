@@ -15,14 +15,16 @@
 #
 # Use CNA and sharp-runtime checkouts from their `next` branches. Set
 # CNA_ROOT_DIR and CNA_SHARP_RUNTIME_ROOT if those checkouts have other names.
-# The eighth pass (2026-09-06) built and verified against these. Another agent
-# was committing to the CNA `next` checkout during that session (6e22a44b6,
-# 4bf74e31b, d42203805 in turn); the SHA below is the one checked out when the
-# final build, the test run and the benchmark baseline were made.
+# CNA and Sharp Runtime are the revisions cna-engine's baseline verifies this
+# project's tests against (cna-engine ADR-002, 2026-10-20); cna-engine is the
+# revision the renderer's move onto the engine was verified with. easy-gl and
+# meta-gl are still the eighth pass's (2026-09-06).
 # branch=next
-CNA=d42203805057d43dc092bb713613bcc945ad8d5a
+CNA=900d0db3b52d76d3115ebda0a0e04a25fefad1a5
+# branch=develop
+CNA_ENGINE=dc5fda8134495d3618fc0c81cc40d846146285ef
 # branch=next
-SHARP_RUNTIME=30ccdef30ba4d27534864b0777729b9e78ee8a21
+SHARP_RUNTIME=f2aecfefeac171b331787e5cdc4849507363ef0e
 # branch=develop
 EASY_GL=deda7a426c3c166c0e03a4790f1ede610e2e46fb
 # branch=develop

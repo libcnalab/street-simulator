@@ -7,6 +7,7 @@
 #
 #   <parent>/cna-street   <- this repository
 #   <parent>/cna
+#   <parent>/cna-engine   (draws the city)
 #   <parent>/sharp-runtime
 #   <parent>/easy-gl      (GL renderer family only)
 #   <parent>/meta-gl      (easy-gl's own sibling)
@@ -45,6 +46,7 @@ fetch() {                       # fetch <dir> <url> <branch> <lock-key>
 }
 
 fetch cna           https://github.com/openeggbert/cna.git           next    CNA
+fetch cna-engine    https://github.com/libcna/cna-engine.git         develop CNA_ENGINE
 fetch sharp-runtime https://github.com/openeggbert/sharp-runtime.git next    SHARP_RUNTIME
 fetch easy-gl       https://github.com/openeggbert/easy-gl.git       develop EASY_GL
 fetch meta-gl       https://github.com/openeggbert/meta-gl.git       develop META_GL

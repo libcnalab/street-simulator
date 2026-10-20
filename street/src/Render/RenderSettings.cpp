@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "CnaStreet/Render/RenderSettings.hpp"
 
+#include "CnaEngine/Graphics/QualitySchema.hpp"
+
 #include "CNA/Logger.hpp"
 #include "System/Text/Json/JsonDocument.hpp"
 #include "System/Text/Json/JsonElement.hpp"
@@ -10,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <map>
 #include <sstream>
 #include <unordered_map>
 #include <variant>
@@ -30,67 +33,6 @@ const char* RenderSettings::presetName(QualityPreset preset)
         case QualityPreset::Ultra:  return "ultra";
     }
     return "?";
-}
-
-void RenderSettings::applyPreset(QualityPreset preset)
-{
-    switch (preset)
-    {
-        case QualityPreset::Low:
-            // Everything a software rasteriser or an old integrated GPU can
-            // still run at an interactive rate. Shadows survive -- a street
-            // without them stops being a street -- but at two coarse cascades,
-            // which is the fewest CascadedShadowMap accepts.
-            multiSample = 0;   renderScale = 0.72f;
-            shadows = true;    shadowCascades = 2;  shadowQuality = 0;
-            shadowDistance = 70.0f;  propShadowDistance = 34.0f;
-            architectureShadowDistance = 70.0f;  contextShadowDistance = 45.0f;
-            hdr = false;  bloom = false;  ssao = false;  fxaa = false;
-            heightFog = true;  lightShafts = false;  ssr = false;  depthOfField = false;
-            clouds = true;
-            reflectionProbes = false;
-            propCullDistance = 105.0f;
-            pedestrianCullDistance = 70.0f;  pedestrianDetailDistance = 12.0f;
-            pedestrianShadowDistance = 22.0f;
-            break;
-        case QualityPreset::Medium:
-            multiSample = 0;   renderScale = 1.0f;
-            shadows = true;    shadowCascades = 2;  shadowQuality = 1;
-            shadowDistance = 120.0f; propShadowDistance = 52.0f;
-            architectureShadowDistance = 100.0f;  contextShadowDistance = 60.0f;
-            hdr = true;   bloom = true;   ssao = false;  fxaa = true;
-            heightFog = true;  lightShafts = false;  ssr = false;  depthOfField = false;
-            reflectionProbes = true;  probeFaceSize = 32;  probeSpacing = 32.0f;
-            propCullDistance = 160.0f;
-            pedestrianCullDistance = 100.0f;  pedestrianDetailDistance = 16.0f;
-            pedestrianShadowDistance = 30.0f;
-            break;
-        case QualityPreset::High:
-            multiSample = 4;   renderScale = 1.0f;
-            shadows = true;    shadowCascades = 3;  shadowQuality = 2;
-            shadowDistance = 175.0f; propShadowDistance = 74.0f;
-            architectureShadowDistance = 150.0f;  contextShadowDistance = 90.0f;
-            hdr = true;   bloom = true;   ssao = true;   fxaa = true;
-            heightFog = true;  lightShafts = true;  ssr = false;  depthOfField = false;
-            reflectionProbes = true;  probeFaceSize = 64;  probeSpacing = 24.0f;
-            propCullDistance = 215.0f;
-            pedestrianCullDistance = 130.0f;  pedestrianDetailDistance = 20.0f;
-            pedestrianShadowDistance = 38.0f;
-            break;
-        case QualityPreset::Ultra:
-            multiSample = 4;   renderScale = 1.0f;
-            shadows = true;    shadowCascades = 4;  shadowQuality = 3;
-            shadowDistance = 240.0f; propShadowDistance = 110.0f;
-            architectureShadowDistance = 220.0f;  contextShadowDistance = 140.0f;
-            hdr = true;   bloom = true;   ssao = true;   fxaa = true;
-            heightFog = true;  lightShafts = true;  ssr = true;   depthOfField = false;
-            ssaoIntensity = 0.85f;
-            reflectionProbes = true;  probeFaceSize = 96;  probeSpacing = 18.0f;
-            propCullDistance = 320.0f;
-            pedestrianCullDistance = 185.0f;  pedestrianDetailDistance = 28.0f;
-            pedestrianShadowDistance = 60.0f;
-            break;
-    }
 }
 
 namespace {
@@ -196,7 +138,110 @@ void WriteValue(std::ostringstream& out, const Binding::Target& target)
     else if (const auto* u = std::get_if<std::uint32_t*>(&target)) out << **u;
 }
 
+/// The four presets as a cna-engine quality schema. Every setting a preset
+/// may touch is declared with its type and sanity bounds, so a value of the
+/// wrong type or out of range is rejected when the schema is built. A preset
+/// lists only the settings it decides; applyPreset() leaves the others as
+/// they are.
+const CnaEngine::Graphics::QualitySchema& PresetSchema()
+{
+    static const CnaEngine::Graphics::QualitySchema schema = [] {
+        using Values = std::map<std::string, CnaEngine::Graphics::QualityValue>;
+        // Everything a software rasteriser or an old integrated GPU can
+        // still run at an interactive rate. Shadows survive -- a street
+        // without them stops being a street -- but at two coarse cascades,
+        // which is the fewest CascadedShadowMap accepts.
+        const Values low{
+            {"multiSample", 0}, {"renderScale", 0.72f},
+            {"shadows", true}, {"shadowCascades", 2}, {"shadowQuality", 0},
+            {"shadowDistance", 70.0f}, {"propShadowDistance", 34.0f},
+            {"architectureShadowDistance", 70.0f}, {"contextShadowDistance", 45.0f},
+            {"hdr", false}, {"bloom", false}, {"ssao", false}, {"fxaa", false},
+            {"heightFog", true}, {"lightShafts", false}, {"ssr", false}, {"depthOfField", false},
+            {"clouds", true},
+            {"reflectionProbes", false},
+            {"propCullDistance", 105.0f},
+            {"pedestrianCullDistance", 70.0f}, {"pedestrianDetailDistance", 12.0f},
+            {"pedestrianShadowDistance", 22.0f}};
+        const Values medium{
+            {"multiSample", 0}, {"renderScale", 1.0f},
+            {"shadows", true}, {"shadowCascades", 2}, {"shadowQuality", 1},
+            {"shadowDistance", 120.0f}, {"propShadowDistance", 52.0f},
+            {"architectureShadowDistance", 100.0f}, {"contextShadowDistance", 60.0f},
+            {"hdr", true}, {"bloom", true}, {"ssao", false}, {"fxaa", true},
+            {"heightFog", true}, {"lightShafts", false}, {"ssr", false}, {"depthOfField", false},
+            {"reflectionProbes", true}, {"probeFaceSize", 32}, {"probeSpacing", 32.0f},
+            {"propCullDistance", 160.0f},
+            {"pedestrianCullDistance", 100.0f}, {"pedestrianDetailDistance", 16.0f},
+            {"pedestrianShadowDistance", 30.0f}};
+        const Values high{
+            {"multiSample", 4}, {"renderScale", 1.0f},
+            {"shadows", true}, {"shadowCascades", 3}, {"shadowQuality", 2},
+            {"shadowDistance", 175.0f}, {"propShadowDistance", 74.0f},
+            {"architectureShadowDistance", 150.0f}, {"contextShadowDistance", 90.0f},
+            {"hdr", true}, {"bloom", true}, {"ssao", true}, {"fxaa", true},
+            {"heightFog", true}, {"lightShafts", true}, {"ssr", false}, {"depthOfField", false},
+            {"reflectionProbes", true}, {"probeFaceSize", 64}, {"probeSpacing", 24.0f},
+            {"propCullDistance", 215.0f},
+            {"pedestrianCullDistance", 130.0f}, {"pedestrianDetailDistance", 20.0f},
+            {"pedestrianShadowDistance", 38.0f}};
+        const Values ultra{
+            {"multiSample", 4}, {"renderScale", 1.0f},
+            {"shadows", true}, {"shadowCascades", 4}, {"shadowQuality", 3},
+            {"shadowDistance", 240.0f}, {"propShadowDistance", 110.0f},
+            {"architectureShadowDistance", 220.0f}, {"contextShadowDistance", 140.0f},
+            {"hdr", true}, {"bloom", true}, {"ssao", true}, {"fxaa", true},
+            {"heightFog", true}, {"lightShafts", true}, {"ssr", true}, {"depthOfField", false},
+            {"ssaoIntensity", 0.85f},
+            {"reflectionProbes", true}, {"probeFaceSize", 96}, {"probeSpacing", 18.0f},
+            {"propCullDistance", 320.0f},
+            {"pedestrianCullDistance", 185.0f}, {"pedestrianDetailDistance", 28.0f},
+            {"pedestrianShadowDistance", 60.0f}};
+
+        // The settings any preset decides, declared with the defaults
+        // RenderSettings starts from.
+        RenderSettings defaults;
+        CnaEngine::Graphics::QualitySchema presets;
+        for (const Binding& binding : Bindings(defaults))
+        {
+            const std::string name = binding.name;
+            if (!low.contains(name) && !medium.contains(name) && !high.contains(name)
+                && !ultra.contains(name))
+                continue;
+            if (const auto* flag = std::get_if<bool*>(&binding.target))
+                presets.Declare({name, **flag, {}, {}, {}});
+            else if (const auto* integer = std::get_if<int*>(&binding.target))
+                presets.Declare({name, **integer, 0.0, 4096.0, {}});
+            else if (const auto* real = std::get_if<float*>(&binding.target))
+                presets.Declare({name, **real, 0.0, 10000.0, {}});
+        }
+        presets.DefinePreset("low", low);
+        presets.DefinePreset("medium", medium);
+        presets.DefinePreset("high", high);
+        presets.DefinePreset("ultra", ultra);
+        return presets;
+    }();
+    return schema;
+}
+
 }  // namespace
+
+void RenderSettings::applyPreset(QualityPreset preset)
+{
+    const auto* values = PresetSchema().PresetValues(presetName(preset));
+    if (values == nullptr) return;
+    for (const Binding& binding : Bindings(*this))
+    {
+        const auto value = values->find(binding.name);
+        if (value == values->end()) continue;
+        if (const auto* flag = std::get_if<bool*>(&binding.target))
+            **flag = std::get<bool>(value->second);
+        else if (const auto* integer = std::get_if<int*>(&binding.target))
+            **integer = std::get<int>(value->second);
+        else if (const auto* real = std::get_if<float*>(&binding.target))
+            **real = std::get<float>(value->second);
+    }
+}
 
 int RenderSettings::applyJson(const std::string& json, std::string& error)
 {

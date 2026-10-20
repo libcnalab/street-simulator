@@ -70,6 +70,7 @@ void Rgb(float out[3], const Vector3& v) { out[0] = v.X; out[1] = v.Y; out[2] = 
 MaterialLibrary::MaterialLibrary(GraphicsDevice* device) : device_(device)
 {
     materials_.resize(static_cast<std::size_t>(MaterialId::Count));
+    derived_.SetNormalizeKeys(false);   // material names, not paths
 }
 
 void MaterialLibrary::setContentSource(ContentManager* content) { content_ = content; }
@@ -94,83 +95,70 @@ Material& MaterialLibrary::mutableGet(MaterialId id)
 
 std::size_t MaterialLibrary::materialCount() const
 {
-    return materials_.size() + derived_.size();
+    return materials_.size() + derived_.Size();
 }
 
 const Material* MaterialLibrary::derive(const std::string& name, MaterialId base,
                                         const Vector2& uvScale, const Vector2& uvOffset)
 {
-    const auto existing = derived_.find(name);
-    if (existing != derived_.end()) return existing->second.get();
-
-    auto material = std::make_unique<Material>(get(base));
-    material->name     = name;
-    material->uvScale  = uvScale;
-    material->uvOffset = uvOffset;
-    Material* raw = material.get();
-    derived_.emplace(name, std::move(material));
-    return raw;
+    return derived_.GetOrCreate<Material>(name, [&] {
+        auto material = std::make_shared<Material>(get(base));
+        material->name     = name;
+        material->uvScale  = uvScale;
+        material->uvOffset = uvOffset;
+        return material;
+    }).get();
 }
 
 const Material* MaterialLibrary::deriveTinted(const std::string& name, MaterialId base,
                                               const Vector3& baseColour, const Vector3& emissive)
 {
-    const auto existing = derived_.find(name);
-    if (existing != derived_.end()) return existing->second.get();
-
-    auto material = std::make_unique<Material>(get(base));
-    material->name           = name;
-    material->baseColour     = baseColour;
-    material->emissiveFactor = emissive;
-    Material* raw = material.get();
-    derived_.emplace(name, std::move(material));
-    return raw;
+    return derived_.GetOrCreate<Material>(name, [&] {
+        auto material = std::make_shared<Material>(get(base));
+        material->name           = name;
+        material->baseColour     = baseColour;
+        material->emissiveFactor = emissive;
+        return material;
+    }).get();
 }
 
 const Material* MaterialLibrary::add(const std::string& name, const Assets::SurfaceMaps& maps,
                                      Material material)
 {
-    const auto existing = derived_.find(name);
-    if (existing != derived_.end()) return existing->second.get();
-
-    material.name = name;
-    // Only a map that was handed over replaces what the material already
-    // carries. An imported model arrives with its textures already on the
-    // GPU, borrowed off the effect the importer built, and passes empty maps;
-    // the first version of this overwrote every one of those pointers with
-    // the null an empty upload returns, so every imported prop in the scene
-    // drew as flat white and its 4K texture set was loaded for nothing.
-    if (!maps.albedo.empty())   material.albedo   = upload(maps.albedo, true, name + ".albedo");
-    if (!maps.normal.empty())   material.normal   = upload(maps.normal, false, name + ".normal");
-    if (!maps.orm.empty())      material.orm      = upload(maps.orm, false, name + ".orm");
-    if (!maps.emissive.empty()) material.emissive = upload(maps.emissive, true, name + ".emissive");
-    auto owned = std::make_unique<Material>(material);
-    Material* raw = owned.get();
-    derived_.emplace(name, std::move(owned));
-    return raw;
+    return derived_.GetOrCreate<Material>(name, [&] {
+        material.name = name;
+        // Only a map that was handed over replaces what the material already
+        // carries. An imported model arrives with its textures already on the
+        // GPU, borrowed off the effect the importer built, and passes empty maps;
+        // the first version of this overwrote every one of those pointers with
+        // the null an empty upload returns, so every imported prop in the scene
+        // drew as flat white and its 4K texture set was loaded for nothing.
+        if (!maps.albedo.empty())   material.albedo   = upload(maps.albedo, true, name + ".albedo");
+        if (!maps.normal.empty())   material.normal   = upload(maps.normal, false, name + ".normal");
+        if (!maps.orm.empty())      material.orm      = upload(maps.orm, false, name + ".orm");
+        if (!maps.emissive.empty()) material.emissive = upload(maps.emissive, true, name + ".emissive");
+        return std::make_shared<Material>(material);
+    }).get();
 }
 
 const Material* MaterialLibrary::addFromContent(const std::string& name, const std::string& albedo,
                                                 const std::string& normal, Material material,
                                                 const std::string& orm)
 {
-    const auto existing = derived_.find(name);
-    if (existing != derived_.end()) return existing->second.get();
+    if (const Material* existing = find(name)) return existing;
     material.name   = name;
     material.albedo = albedo.empty() ? nullptr : load(albedo);
+    // Not cached: a later call may find the texture compiled.
     if (material.albedo == nullptr) return nullptr;
     material.normal = normal.empty() ? nullptr : load(normal);
     material.orm    = orm.empty() ? nullptr : load(orm);
-    auto owned = std::make_unique<Material>(material);
-    Material* raw = owned.get();
-    derived_.emplace(name, std::move(owned));
-    return raw;
+    return derived_.GetOrCreate<Material>(name, [&] { return std::make_shared<Material>(material); }).get();
 }
 
 const Material* MaterialLibrary::find(const std::string& name) const
 {
-    const auto existing = derived_.find(name);
-    return existing == derived_.end() ? nullptr : existing->second.get();
+    if (!derived_.Contains<Material>(name)) return nullptr;
+    return derived_.TryGet<Material>(name).get();
 }
 
 Texture2D* MaterialLibrary::upload(const Image& image, bool srgb, const std::string& name)

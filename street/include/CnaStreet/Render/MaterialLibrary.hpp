@@ -4,6 +4,8 @@
 #include "CnaStreet/Assets/Image.hpp"
 #include "CnaStreet/Render/Material.hpp"
 
+#include "CnaEngine/Assets/AssetRegistry.hpp"
+
 #include "Microsoft/Xna/Framework/Vector3.hpp"
 
 #include <cstddef>
@@ -175,7 +177,7 @@ public:
     [[nodiscard]] const Material* find(const std::string& name) const;
 
     /// Every derived material, so the overlay can count them.
-    [[nodiscard]] std::size_t derivedCount() const { return derived_.size(); }
+    [[nodiscard]] std::size_t derivedCount() const { return derived_.Size(); }
 
     [[nodiscard]] std::size_t textureCount() const { return textures_.size(); }
     [[nodiscard]] std::size_t textureBytes() const { return textureBytes_; }
@@ -249,7 +251,10 @@ private:
     std::size_t generatedCount_ = 0;
     std::vector<std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D>> textures_;
     std::vector<Material> materials_;
-    std::unordered_map<std::string, std::unique_ptr<Material>> derived_;
+    /// Derived and added materials by name; the first definition of a name
+    /// wins. Mutable because looking one up counts as a hit in the registry's
+    /// statistics.
+    mutable CnaEngine::Assets::AssetRegistry derived_;
     std::unordered_map<std::string, float> nominalRoughness_;
     std::unordered_map<std::string, float> nominalMetallic_;
     bool nominalsLoaded_ = false;

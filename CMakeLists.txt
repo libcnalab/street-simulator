@@ -49,7 +49,26 @@ message(STATUS "cna-street: ${PROJECT_VERSION}, renderer ${CNA_STREET_RENDERER},
                "${CMAKE_BUILD_TYPE}, ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "cna-street: CNA at ${CNA_ROOT_DIR}")
 
+# cna-engine links CNA's static module targets. With CNA's default shared
+# library the `CNA` umbrella would be a second copy of CNA in the same process
+# (cna-engine upstream-issues.md UP-006), so CNA is built statically here.
+set(CNA_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+
 add_subdirectory("${CNA_ROOT_DIR}" cna EXCLUDE_FROM_ALL)
+
+# cna-engine (a sibling of CNA by default): its strict modules and the enhanced
+# graphics module over CNA's PbrEffect. cna-extended is not used.
+set(CNA_STREET_CNA_ENGINE_ROOT "${CNA_ROOT_DIR}/../cna-engine" CACHE PATH
+    "Path to the cna-engine checkout")
+cna_street_require_checkout("${CNA_STREET_CNA_ENGINE_ROOT}" "cna-engine"
+    "https://github.com/libcna/cna-engine.git" "develop")
+set(CNA_ENGINE_BUILD_TESTS            OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_BUILD_EXAMPLES         OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_WITH_EXTENDED          OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_WITH_ENHANCED_GRAPHICS ON  CACHE BOOL "" FORCE)
+set(CNA_ENGINE_INSTALL                OFF CACHE BOOL "" FORCE)
+add_subdirectory("${CNA_STREET_CNA_ENGINE_ROOT}" cna-engine EXCLUDE_FROM_ALL)
+message(STATUS "cna-street: cna-engine at ${CNA_STREET_CNA_ENGINE_ROOT}")
 
 # CNA's SDL comes from a vendored submodule built as part of the framework; a
 # few ancillary upstream targets still expect the config packages to be found.

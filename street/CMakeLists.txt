@@ -9,7 +9,7 @@ add_library(CnaStreet::Core ALIAS cna_street_core)
 
 target_include_directories(cna_street_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(cna_street_core
-    PUBLIC  CNA
+    PUBLIC  CNA CnaEngine::Core CnaEngine::Graphics CnaEngine::EnhancedGraphics
     PRIVATE CnaStreet::Warnings)
 
 if(TARGET SharpRuntime::Text.Json)

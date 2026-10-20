@@ -17,6 +17,13 @@ using namespace Microsoft::Xna::Framework::Graphics;
 
 namespace CnaStreet {
 
+namespace {
+const CnaEngine::Graphics::AttributeMask kSkinnedAttributes{
+    CnaEngine::Graphics::VertexAttribute::Position,     CnaEngine::Graphics::VertexAttribute::Normal,
+    CnaEngine::Graphics::VertexAttribute::Tangent,      CnaEngine::Graphics::VertexAttribute::TexCoord0,
+    CnaEngine::Graphics::VertexAttribute::BlendIndices, CnaEngine::Graphics::VertexAttribute::BlendWeights};
+}  // namespace
+
 SkinnedGpuMesh::SkinnedGpuMesh(GraphicsDevice& device, const Geometry::SkinnedMeshData& data,
                                std::string name)
     : name_(std::move(name))
@@ -48,6 +55,8 @@ SkinnedGpuMesh::SkinnedGpuMesh(GraphicsDevice& device, const Geometry::SkinnedMe
     sphere_ = BoundingSphere::CreateFromBoundingBox(bounds_);
     gpuBytes_ = data.vertices.size() * sizeof(Geometry::SkinnedVertex)
                 + data.indices.size() * sizeof(std::uint32_t);
+    engine_ = CnaEngine::Graphics::GpuMesh::Borrow(*vertexBuffer_, *indexBuffer_, vertexCount_, triangleCount_,
+                                                   bounds_, kSkinnedAttributes, vertexOffset_, startIndex_);
 }
 
 SkinnedGpuMesh::SkinnedGpuMesh(ModelMeshPart& part, const BoundingBox& bounds, std::string name)
@@ -69,6 +78,8 @@ SkinnedGpuMesh::SkinnedGpuMesh(ModelMeshPart& part, const BoundingBox& bounds, s
     bounds_ = BoundingBox(bounds.Min - grow, bounds.Max + grow);
     sphere_ = BoundingSphere::CreateFromBoundingBox(bounds_);
     gpuBytes_ = 0;   // borrowed; the Model owns it
+    engine_ = CnaEngine::Graphics::GpuMesh::Borrow(*vertexBuffer_, *indexBuffer_, vertexCount_, triangleCount_,
+                                                   bounds_, kSkinnedAttributes, vertexOffset_, startIndex_);
 }
 
 SkinnedGpuMesh::~SkinnedGpuMesh() = default;

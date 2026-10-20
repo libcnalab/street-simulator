@@ -3,6 +3,8 @@
 
 #include "CnaStreet/Geometry/MeshData.hpp"
 
+#include "CnaEngine/Graphics/GpuMesh.hpp"
+
 #include "Microsoft/Xna/Framework/BoundingBox.hpp"
 #include "Microsoft/Xna/Framework/BoundingSphere.hpp"
 
@@ -61,6 +63,9 @@ public:
     [[nodiscard]] const std::string& name() const { return name_; }
     /// Bytes of GPU memory this mesh occupies, for the diagnostics overlay.
     [[nodiscard]] std::size_t gpuBytes() const { return gpuBytes_; }
+    /// The same buffers as a cna-engine mesh, for drawing through cna-engine's
+    /// renderer.
+    [[nodiscard]] const CnaEngine::Graphics::GpuMesh& engine() const { return engine_; }
 
 private:
     std::string name_;
@@ -78,6 +83,7 @@ private:
     int         triangleCount_ = 0;
     int         vertexCount_   = 0;
     std::size_t gpuBytes_      = 0;
+    CnaEngine::Graphics::GpuMesh engine_;   // borrows the buffers above
 };
 
 }  // namespace CnaStreet

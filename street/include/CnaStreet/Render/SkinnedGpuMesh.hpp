@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "CnaEngine/Graphics/GpuMesh.hpp"
 #include "CnaStreet/Geometry/SkinnedMeshData.hpp"
 
 #include "Microsoft/Xna/Framework/BoundingBox.hpp"
@@ -54,6 +55,9 @@ public:
     [[nodiscard]] int triangleCount() const { return triangleCount_; }
     [[nodiscard]] std::size_t gpuBytes() const { return gpuBytes_; }
     [[nodiscard]] const std::string& name() const { return name_; }
+    /// The same buffers as a cna-engine mesh (skinned attributes), for drawing
+    /// through cna-engine's renderer.
+    [[nodiscard]] const CnaEngine::Graphics::GpuMesh& engine() const { return engine_; }
 
 private:
     std::string name_;
@@ -70,6 +74,7 @@ private:
     int         triangleCount_ = 0;
     int         vertexCount_   = 0;
     std::size_t gpuBytes_      = 0;
+    CnaEngine::Graphics::GpuMesh engine_;   // borrows the buffers above
 };
 
 }  // namespace CnaStreet

@@ -17,6 +17,14 @@ using namespace Microsoft::Xna::Framework::Graphics;
 
 namespace CnaStreet {
 
+namespace {
+/// What every street vertex carries (Geometry::Vertex, and the imported parts
+/// the content pipeline writes in the same layout).
+const CnaEngine::Graphics::AttributeMask kVertexAttributes{
+    CnaEngine::Graphics::VertexAttribute::Position, CnaEngine::Graphics::VertexAttribute::Normal,
+    CnaEngine::Graphics::VertexAttribute::Tangent, CnaEngine::Graphics::VertexAttribute::TexCoord0};
+}  // namespace
+
 GpuMesh::GpuMesh(GraphicsDevice& device, const Geometry::MeshData& data, std::string name)
     : name_(std::move(name))
 {
@@ -51,6 +59,7 @@ GpuMesh::GpuMesh(GraphicsDevice& device, const Geometry::MeshData& data, std::st
     sphere_ = BoundingSphere::CreateFromBoundingBox(bounds_);
     gpuBytes_ = data.vertices.size() * sizeof(Geometry::Vertex)
                 + data.indices.size() * sizeof(std::uint32_t);
+    engine_ = CnaEngine::Graphics::GpuMesh::Borrow(*part_, bounds_, kVertexAttributes);
 }
 
 GpuMesh::~GpuMesh() = default;
@@ -72,6 +81,7 @@ GpuMesh::GpuMesh(ModelMeshPart& part, const BoundingBox& bounds, std::string nam
     gpuBytes_ = 0;
     if (vertexBuffer_ == nullptr || indexBuffer_ == nullptr || triangleCount_ <= 0)
         throw std::invalid_argument("GpuMesh '" + name_ + "': the mesh part has no geometry");
+    engine_ = CnaEngine::Graphics::GpuMesh::Borrow(*part_, bounds_, kVertexAttributes);
 }
 
 void GpuMesh::draw(GraphicsDevice& device) const

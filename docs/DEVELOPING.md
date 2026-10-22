@@ -92,5 +92,6 @@ at least one capture on each affected renderer.
 ## Documentation to maintain
 
 Keep `README.md` focused on setup and use, this file on development, and
-`assets/ATTRIBUTION.md` on provenance. The removed audit and comparison reports
+`assets/ATTRIBUTION.md` on provenance. `docs/known-issues.md` lists defects
+found by cna-engine that are not fixed yet; remove an entry with its fix. The removed audit and comparison reports
 remain available in Git history when a past decision needs investigation.
